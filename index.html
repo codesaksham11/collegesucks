@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Void Eater</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: 'Courier New', Courier, monospace;
+            touch-action: none; /* Prevents scrolling on mobile */
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        #score-board {
+            color: #fff;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 0 0 5px #000;
+        }
+        #level-indicator {
+            color: #0ff;
+            font-size: 16px;
+        }
+        /* Upgrade Menu */
+        #upgrade-menu, #start-menu, #game-over-menu {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex; /* Hidden by default via JS */
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            z-index: 10;
+        }
+        .hidden { display: none !important; }
+        
+        h1 { color: #fff; margin-bottom: 10px; text-align: center; }
+        p { color: #aaa; text-align: center; max-width: 300px; margin-bottom: 20px;}
+        
+        .btn {
+            background: #222;
+            border: 2px solid #fff;
+            color: #fff;
+            padding: 15px 30px;
+            margin: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            width: 80%;
+            max-width: 300px;
+            text-align: center;
+            user-select: none;
+        }
+        .btn:active { background: #fff; color: #000; }
+        
+        .upgrade-option {
+            border-color: #0f0;
+            color: #0f0;
+        }
+        
+        #joystick-zone {
+            position: absolute;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.2);
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div>
+            <div id="score-board">SCORE: 0</div>
+            <div id="level-indicator">LVL: 1</div>
+        </div>
+        <div id="joystick-zone">DRAG ANYWHERE TO MOVE</div>
+    </div>
+
+    <!-- Start Menu -->
+    <div id="start-menu">
+        <h1>VOID EATER</h1>
+        <p>Your phone is old. Your day sucked. Survive the void.</p>
+        <p>Drag thumb to move. Shooting is automatic.</p>
+        <div class="btn" onclick="startGame()">START</div>
+    </div>
+
+    <!-- Upgrade Menu -->
+    <div id="upgrade-menu" class="hidden">
+        <h1 style="color: #0f0">LEVEL UP</h1>
+        <p>Choose an upgrade:</p>
+        <div id="upgrade-list"></div>
+    </div>
+
+    <!-- Game Over Menu -->
+    <div id="game-over-menu" class="hidden">
+        <h1 style="color: #f00">YOU DIED</h1>
+        <p id="final-score">Score: 0</p>
+        <div class="btn" onclick="startGame()">TRY AGAIN</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+    // --- SETUP & CONFIG ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Game State
+    let width, height;
+    let gameRunning = false;
+    let paused = false;
+    let score = 0;
+    let frameCount = 0;
+    
+    // Player Stats
+    let player = { x: 0, y: 0, size: 10, speed: 4, color: '#0ff', hp: 100 };
+    let bullets = [];
+    let enemies = [];
+    let particles = [];
+    let expGems = [];
+    
+    // RPG Stats
+    let level = 1;
+    let exp = 0;
+    let expToNextLevel = 100;
+    let stats = {
+        fireRate: 30, // Lower is faster (frames between shots)
+        bulletSpeed: 7,
+        bulletCount: 1, // Multishot
+        bulletDamage: 10,
+        moveSpeed: 4,
+        piercing: 0 // How many enemies a bullet goes through
+    };
+
+    // Input Handling
+    let touchX = 0, touchY = 0;
+    let isTouching = false;
+    let joystickOrigin = { x: 0, y: 0 };
+    
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- CONTROLS (Virtual Joystick logic) ---
+    document.addEventListener('touchstart', e => {
+        if(!gameRunning || paused) return;
+        isTouching = true;
+        joystickOrigin.x = e.touches[0].clientX;
+        joystickOrigin.y = e.touches[0].clientY;
+        touchX = e.touches[0].clientX;
+        touchY = e.touches[0].clientY;
+    }, {passive: false});
+
+    document.addEventListener('touchmove', e => {
+        if(!gameRunning || paused) return;
+        e.preventDefault(); // Stop scrolling
+        touchX = e.touches[0].clientX;
+        touchY = e.touches[0].clientY;
+    }, {passive: false});
+
+    document.addEventListener('touchend', () => {
+        isTouching = false;
+    });
+
+    // For PC testing
+    let keys = {};
+    window.addEventListener('keydown', e => keys[e.key] = true);
+    window.addEventListener('keyup', e => keys[e.key] = false);
+
+    // --- GAME LOGIC ---
+
+    function startGame() {
+        // Reset everything
+        player.x = width / 2;
+        player.y = height / 2;
+        bullets = [];
+        enemies = [];
+        particles = [];
+        expGems = [];
+        score = 0;
+        level = 1;
+        exp = 0;
+        expToNextLevel = 100;
+        
+        // Reset Stats
+        stats = {
+            fireRate: 40,
+            bulletSpeed: 7,
+            bulletCount: 1,
+            bulletDamage: 10,
+            moveSpeed: 3,
+            piercing: 0
+        };
+
+        document.getElementById('start-menu').classList.add('hidden');
+        document.getElementById('game-over-menu').classList.add('hidden');
+        document.getElementById('upgrade-menu').classList.add('hidden');
+        
+        gameRunning = true;
+        paused = false;
+        gameLoop();
+    }
+
+    function spawnEnemy() {
+        // Spawn edges
+        let ex, ey;
+        if(Math.random() < 0.5) {
+            ex = Math.random() < 0.5 ? -20 : width + 20;
+            ey = Math.random() * height;
+        } else {
+            ex = Math.random() * width;
+            ey = Math.random() < 0.5 ? -20 : height + 20;
+        }
+
+        // Difficulty scaling
+        let speed = 1 + (level * 0.1);
+        let hp = 10 + (level * 5);
+        
+        enemies.push({
+            x: ex, y: ey, 
+            size: 12 + Math.random() * 5, 
+            speed: speed, 
+            hp: hp,
+            maxHp: hp,
+            color: `hsl(${Math.random()*60}, 100%, 50%)` // Red/Orange hues
+        });
+    }
+
+    function createExplosion(x, y, color) {
+        // Minimal particles for J7 performance
+        for(let i=0; i<4; i++) {
+            particles.push({
+                x: x, y: y,
+                vx: (Math.random() - 0.5) * 5,
+                vy: (Math.random() - 0.5) * 5,
+                life: 20,
+                color: color
+            });
+        }
+    }
+
+    function checkLevelUp() {
+        if (exp >= expToNextLevel) {
+            exp -= expToNextLevel;
+            level++;
+            expToNextLevel = Math.floor(expToNextLevel * 1.2);
+            showUpgradeMenu();
+        }
+        document.getElementById('level-indicator').innerText = "LVL: " + level;
+    }
+
+    function showUpgradeMenu() {
+        paused = true;
+        const menu = document.getElementById('upgrade-menu');
+        const list = document.getElementById('upgrade-list');
+        list.innerHTML = '';
+        menu.classList.remove('hidden');
+
+        // Define possible upgrades
+        const options = [
+            { name: "Multishot (+1 Bullet)", type: "multishot" },
+            { name: "Fire Rate (Shoot Faster)", type: "firerate" },
+            { name: "Damage Up", type: "damage" },
+            { name: "Move Speed", type: "speed" },
+            { name: "Bullet Speed", type: "bulletspeed" }
+        ];
+
+        // Pick 3 random
+        const picks = [];
+        while(picks.length < 3) {
+            const r = options[Math.floor(Math.random() * options.length)];
+            if(!picks.includes(r)) picks.push(r);
+        }
+
+        picks.forEach(opt => {
+            const btn = document.createElement('div');
+            btn.className = 'btn upgrade-option';
+            btn.innerText = opt.name;
+            btn.onclick = () => applyUpgrade(opt.type);
+            list.appendChild(btn);
+        });
+    }
+
+    function applyUpgrade(type) {
+        if(type === 'multishot') stats.bulletCount++;
+        if(type === 'firerate') stats.fireRate = Math.max(5, stats.fireRate - 5);
+        if(type === 'damage') stats.bulletDamage += 10;
+        if(type === 'speed') stats.moveSpeed += 1;
+        if(type === 'bulletspeed') stats.bulletSpeed += 2;
+        
+        document.getElementById('upgrade-menu').classList.add('hidden');
+        paused = false;
+        gameLoop(); // Restart loop
+    }
+
+    function update() {
+        if(!gameRunning || paused) return;
+
+        // Player Movement (Touch Joystick style)
+        if (isTouching) {
+            let dx = touchX - joystickOrigin.x;
+            let dy = touchY - joystickOrigin.y;
+            
+            // Normalize
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            if(dist > 0) {
+                player.x += (dx/dist) * stats.moveSpeed;
+                player.y += (dy/dist) * stats.moveSpeed;
+            }
+            
+            // Re-center joystick somewhat to prevent "drift" feeling
+            if(dist > 50) {
+                joystickOrigin.x = touchX - (dx/dist) * 50;
+                joystickOrigin.y = touchY - (dy/dist) * 50;
+            }
+        }
+        
+        // PC Movement (Backup)
+        if(keys['ArrowUp'] || keys['w']) player.y -= stats.moveSpeed;
+        if(keys['ArrowDown'] || keys['s']) player.y += stats.moveSpeed;
+        if(keys['ArrowLeft'] || keys['a']) player.x -= stats.moveSpeed;
+        if(keys['ArrowRight'] || keys['d']) player.x += stats.moveSpeed;
+
+        // Bounds
+        player.x = Math.max(10, Math.min(width-10, player.x));
+        player.y = Math.max(10, Math.min(height-10, player.y));
+
+        // Shooting (Auto)
+        if (frameCount % stats.fireRate === 0) {
+            // Find nearest enemy to aim at
+            let target = null;
+            let minDist = Infinity;
+            enemies.forEach(e => {
+                let d = Math.hypot(e.x - player.x, e.y - player.y);
+                if(d < minDist) { minDist = d; target = e; }
+            });
+
+            let angle = 0;
+            if(target) {
+                angle = Math.atan2(target.y - player.y, target.x - player.x);
+            } else {
+                angle = -Math.PI / 2; // Shoot up if no enemies
+            }
+
+            // Multishot logic
+            for(let i=0; i<stats.bulletCount; i++) {
+                // Spread bullets slightly
+                let spread = (i - (stats.bulletCount-1)/2) * 0.2; 
+                bullets.push({
+                    x: player.x, y: player.y,
+                    vx: Math.cos(angle + spread) * stats.bulletSpeed,
+                    vy: Math.sin(angle + spread) * stats.bulletSpeed,
+                    life: 100,
+                    pierce: stats.piercing
+                });
+            }
+        }
+
+        // Update Bullets
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            b.x += b.vx;
+            b.y += b.vy;
+            b.life--;
+            if (b.life <= 0 || b.x < 0 || b.x > width || b.y < 0 || b.y > height) {
+                bullets.splice(i, 1);
+            }
+        }
+
+        // Spawn Enemies
+        if (frameCount % Math.max(20, 100 - (level * 2)) === 0) {
+            spawnEnemy();
+        }
+
+        // Update Enemies
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            let e = enemies[i];
+            // Chase player
+            let angle = Math.atan2(player.y - e.y, player.x - e.x);
+            e.x += Math.cos(angle) * e.speed;
+            e.y += Math.sin(angle) * e.speed;
+
+            // Collision with Player
+            let dist = Math.hypot(player.x - e.x, player.y - e.y);
+            if (dist < player.size + e.size) {
+                // Game Over
+                gameRunning = false;
+                document.getElementById('final-score').innerText = "Score: " + score;
+                document.getElementById('game-over-menu').classList.remove('hidden');
+            }
+
+            // Collision with Bullets
+            for (let j = bullets.length - 1; j >= 0; j--) {
+                let b = bullets[j];
+                let bDist = Math.hypot(b.x - e.x, b.y - e.y);
+                if (bDist < e.size + 5) { // 5 is bullet radius approx
+                    e.hp -= stats.bulletDamage;
+                    createExplosion(e.x, e.y, '#fff');
+                    if (b.pierce <= 0) {
+                        bullets.splice(j, 1);
+                    } else {
+                        b.pierce--;
+                    }
+                    
+                    if (e.hp <= 0) {
+                        // Enemy Die
+                        score += 10;
+                        exp += 10 + (level * 2);
+                        // Drop XP Gem visual
+                        expGems.push({x: e.x, y: e.y, val: 1});
+                        enemies.splice(i, 1);
+                        checkLevelUp();
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Update Particles
+        for(let i=particles.length-1; i>=0; i--) {
+            let p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life--;
+            if(p.life <= 0) particles.splice(i, 1);
+        }
+
+        // Update Gems (Visual suction)
+        for(let i=expGems.length-1; i>=0; i--) {
+            let g = expGems[i];
+            let angle = Math.atan2(player.y - g.y, player.x - g.x);
+            g.x += Math.cos(angle) * 8; // Gems fly to player
+            g.y += Math.sin(angle) * 8;
+            if(Math.hypot(player.x - g.x, player.y - g.y) < player.size) {
+                expGems.splice(i, 1);
+            }
+        }
+
+        document.getElementById('score-board').innerText = "SCORE: " + score;
+        frameCount++;
+    }
+
+    function draw() {
+        // Clear screen
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, width, height);
+
+        // Draw Player
+        ctx.fillStyle = player.color;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw Bullets
+        ctx.fillStyle = '#ff0';
+        for (let b of bullets) {
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Draw Enemies
+        for (let e of enemies) {
+            ctx.fillStyle = e.color;
+            ctx.fillRect(e.x - e.size, e.y - e.size, e.size * 2, e.size * 2);
+        }
+        
+        // Draw Particles
+        for(let p of particles) {
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.life / 20;
+            ctx.fillRect(p.x, p.y, 2, 2);
+            ctx.globalAlpha = 1;
+        }
+        
+        // Draw Gems
+        ctx.fillStyle = '#0f0';
+        for(let g of expGems) {
+             ctx.fillRect(g.x, g.y, 4, 4);
+        }
+    }
+
+    function gameLoop() {
+        if (!paused && gameRunning) {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+    }
+</script>
+</body>
+  </html>
