@@ -1,0 +1,2 @@
+# collegesucks
+My college sucks
